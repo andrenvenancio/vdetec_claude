@@ -1,0 +1,49 @@
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+
+# Database
+sqlalchemy[asyncio]==2.0.35
+asyncpg==0.29.0
+alembic==1.13.2
+psycopg2-binary==2.9.9
+
+# Cache / Queue
+redis==5.0.8
+celery[redis]==5.4.0
+
+# Computer Vision
+ultralytics==8.2.103          # YOLOv8/v11
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+Pillow==10.4.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# OCR
+easyocr==1.7.1
+
+# Barcode
+pyzbar==0.1.9
+python-barcode==0.15.1
+
+# Embeddings / similarity search
+faiss-cpu==1.8.0
+sentence-transformers==3.1.1
+
+# API / Schemas
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# Alerts / Notifications
+httpx==0.27.2
+aiosmtplib==3.0.1
+python-telegram-bot==21.5
+
+# Utilities
+python-dotenv==1.0.1
+structlog==24.4.0
+tenacity==9.0.0
+pytest==8.3.3
+pytest-asyncio==0.24.0
