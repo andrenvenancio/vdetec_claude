@@ -1,0 +1,57 @@
+# Virtualenv
+.venv/
+
+# Models & weights (large binaries, not useful as context)
+models/
+*.pt
+*.pth
+*.onnx
+*.weights
+
+# Images & videos
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.tif
+*.webp
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Media & uploads
+media/
+uploads/
+
+# Logs
+*.log
+logs/
+
+# Test & coverage artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Cache
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# Docs & notebooks (large, low-signal for code tasks)
+docs/
+*.ipynb
+
+# Alembic migration SQL dumps
+*.sql
+
+# Compiled / dist
+dist/
+build/
