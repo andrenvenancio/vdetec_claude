@@ -1,138 +1,86 @@
 """
-Módulo de detecção de objetos usando YOLOv8/v11.
-Responsável por localizar regiões de interesse (produtos) na imagem.
+Detecção zero-shot de produtos em prateleiras usando YOLO-World.
+Não requer treinamento — usa modelo pré-treinado com vocabulário aberto.
 """
 from __future__ import annotations
 
-import numpy as np
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Sequence
 
-import torch
-from ultralytics import YOLO
+import numpy as np
+from ultralytics import YOLOWorld
 
-from config.settings import settings
+# Classes que descrevem produtos farmacêuticos em gôndola
+_DEFAULT_CLASSES = [
+    "medicine box",
+    "medicine bottle",
+    "pharmaceutical product",
+    "product package",
+    "drug box",
+    "cosmetic product",
+]
 
 
 @dataclass
 class Detection:
-    """Resultado bruto de uma detecção."""
     bbox: tuple[float, float, float, float]   # x1, y1, x2, y2 (pixels)
     confidence: float
-    class_id: int
     class_name: str
     crop: np.ndarray | None = field(default=None, repr=False)
 
 
 class ProductDetector:
     """
-    Wrapper sobre o modelo YOLO para detecção de produtos em prateleiras.
-
-    Uso:
-        detector = ProductDetector()
-        detections = detector.predict(frame)
+    Detector zero-shot baseado em YOLO-World.
+    Baixa o modelo automaticamente na primeira execução (~100 MB).
     """
+
+    MODEL_ID = "yolov8s-worldv2.pt"
 
     def __init__(
         self,
-        model_path: str | Path | None = None,
-        conf: float | None = None,
-        iou: float | None = None,
-        device: str | None = None,
+        classes: list[str] | None = None,
+        conf: float = 0.25,
+        iou: float = 0.45,
+        device: str = "cpu",
     ) -> None:
-        self._model_path = Path(model_path or settings.model_path)
-        self._conf = conf or settings.detector_conf_threshold
-        self._iou = iou or settings.detector_iou_threshold
-        self._device = device or settings.device
-        self._model: YOLO | None = None
+        self._classes = classes or _DEFAULT_CLASSES
+        self._conf = conf
+        self._iou = iou
+        self._device = device
+        self._model: YOLOWorld | None = None
 
     def load(self) -> None:
-        """Carrega o modelo na memória (lazy loading)."""
         if self._model is None:
-            self._model = YOLO(str(self._model_path))
-            self._model.to(self._device)
+            self._model = YOLOWorld(self.MODEL_ID)
+            self._model.set_classes(self._classes)
 
-    def predict(self, image: np.ndarray, extract_crops: bool = True) -> list[Detection]:
-        """
-        Executa detecção em uma única imagem.
-
-        Args:
-            image: Frame BGR (OpenCV) ou RGB.
-            extract_crops: Se True, inclui recorte da região detectada.
-
-        Returns:
-            Lista de Detection ordenada por confiança descendente.
-        """
+    def predict(self, image: np.ndarray) -> list[Detection]:
         self.load()
-        results = self._model(
+        results = self._model.predict(
             image,
             conf=self._conf,
             iou=self._iou,
             verbose=False,
+            device=self._device,
         )[0]
 
         detections: list[Detection] = []
-        boxes = results.boxes
-        if boxes is None:
+        if results.boxes is None:
             return detections
 
-        for box in boxes:
+        h, w = image.shape[:2]
+        for box in results.boxes:
             x1, y1, x2, y2 = box.xyxy[0].tolist()
-            conf = float(box.conf[0])
-            cls_id = int(box.cls[0])
-            cls_name = results.names[cls_id]
-
-            crop = None
-            if extract_crops:
-                xi1, yi1, xi2, yi2 = int(x1), int(y1), int(x2), int(y2)
-                crop = image[yi1:yi2, xi1:xi2].copy()
-
+            # Descarta crops muito pequenos (ruído)
+            if (x2 - x1) < 10 or (y2 - y1) < 10:
+                continue
+            xi1, yi1, xi2, yi2 = int(x1), int(y1), int(x2), int(y2)
             detections.append(Detection(
                 bbox=(x1, y1, x2, y2),
-                confidence=conf,
-                class_id=cls_id,
-                class_name=cls_name,
-                crop=crop,
+                confidence=float(box.conf[0]),
+                class_name=self._classes[int(box.cls[0])],
+                crop=image[yi1:yi2, xi1:xi2].copy(),
             ))
 
         return sorted(detections, key=lambda d: d.confidence, reverse=True)
-
-    def predict_batch(
-        self, images: Sequence[np.ndarray], extract_crops: bool = True
-    ) -> list[list[Detection]]:
-        """Executa detecção em lote para maior eficiência com GPU."""
-        self.load()
-        all_results = self._model(
-            list(images),
-            conf=self._conf,
-            iou=self._iou,
-            verbose=False,
-        )
-        batch_detections: list[list[Detection]] = []
-        for results, image in zip(all_results, images):
-            detections: list[Detection] = []
-            boxes = results.boxes
-            if boxes is None:
-                batch_detections.append(detections)
-                continue
-            for box in boxes:
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                conf = float(box.conf[0])
-                cls_id = int(box.cls[0])
-                cls_name = results.names[cls_id]
-                crop = None
-                if extract_crops:
-                    xi1, yi1, xi2, yi2 = int(x1), int(y1), int(x2), int(y2)
-                    crop = image[yi1:yi2, xi1:xi2].copy()
-                detections.append(Detection(
-                    bbox=(x1, y1, x2, y2),
-                    confidence=conf,
-                    class_id=cls_id,
-                    class_name=cls_name,
-                    crop=crop,
-                ))
-            batch_detections.append(
-                sorted(detections, key=lambda d: d.confidence, reverse=True)
-            )
-        return batch_detections

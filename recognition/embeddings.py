@@ -98,3 +98,19 @@ class EmbeddingIndex:
                 score=float(dist),
             ))
         return hits
+
+    def search_by_ean(self, ean: str) -> EmbeddingHit | None:
+        """Busca exata por EAN nos metadados (sem usar o índice vetorial)."""
+        for meta in self._meta:
+            if meta.get("ean") == ean:
+                return EmbeddingHit(
+                    product_id=meta["product_id"],
+                    product_name=meta["product_name"],
+                    ean=meta["ean"],
+                    score=1.0,
+                )
+        return None
+
+    @property
+    def size(self) -> int:
+        return len(self._meta)
