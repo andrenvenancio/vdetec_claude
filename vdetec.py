@@ -88,21 +88,31 @@ class VDetec:
         detector_conf: float = 0.25,
         device: str = "cpu",
     ) -> None:
+        self._device = device
         self._detector = ProductDetector(conf=detector_conf, device=device)
         self._pipeline: RecognitionPipeline | None = None
         self._planogram: PlanogramLoader | None = None
 
     # ── Carregamento do planograma ─────────────────────────────────────────
 
-    def load_planogram(self, source: str | Path) -> "VDetec":
+    def load_planogram(
+        self,
+        source: str | Path,
+        dist_csv: str | Path | None = None,
+    ) -> "VDetec":
         """
         Carrega planograma a partir de:
-          - pasta de imagens  (ex: "planogram/")
-          - arquivo JSON      (ex: "planogram.json")
-          - arquivo CSV       (ex: "planogram.csv")
+          - imagem PNG/JPG + CSV de capacidade  →  from_image(source, dist_csv)
+          - pasta de imagens individuais        →  from_folder(source)
+          - arquivo JSON                        →  from_json(source)
+          - arquivo CSV de manifesto            →  from_csv(source)
         """
         source = Path(source)
-        if source.is_dir():
+        if source.is_file() and source.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+            if dist_csv is None:
+                raise ValueError("Passe dist_csv= junto com a imagem do planograma.")
+            self._planogram = PlanogramLoader.from_image(source, dist_csv, device=self._device)
+        elif source.is_dir():
             self._planogram = PlanogramLoader.from_folder(source)
         elif source.suffix.lower() == ".json":
             self._planogram = PlanogramLoader.from_json(source)

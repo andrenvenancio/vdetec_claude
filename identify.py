@@ -66,7 +66,9 @@ def annotate(frame: np.ndarray, result: IdentificationResult, min_conf: float = 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="vdetec — identificação de produtos em prateleiras")
     p.add_argument("--planogram", required=True,
-                   help="Pasta de imagens, arquivo .json ou .csv do planograma")
+                   help="Imagem PNG do planograma, pasta de imagens, .json ou .csv")
+    p.add_argument("--dist-csv", dest="dist_csv", metavar="CSV",
+                   help="CSV de capacidade por prateleira (obrigatório quando --planogram é PNG)")
     p.add_argument("--image", nargs="+", required=True,
                    help="Uma ou mais imagens de prateleira para analisar")
     p.add_argument("--save", metavar="PATH",
@@ -84,7 +86,7 @@ def main() -> None:
     args = parse_args()
 
     vd = VDetec(device=args.device)
-    vd.load_planogram(args.planogram)
+    vd.load_planogram(args.planogram, dist_csv=args.dist_csv)
 
     for img_path in args.image:
         result = vd.identify(img_path)
