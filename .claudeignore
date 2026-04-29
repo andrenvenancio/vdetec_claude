@@ -26,6 +26,10 @@ models/
 media/
 uploads/
 
+# Ignora tudo em images/ exceto subpastas explicitamente permitidas
+images/*
+!images/adocante/
+
 # Logs
 *.log
 logs/
