@@ -79,26 +79,44 @@ class PlanogramLoader:
         dist_csv: str | Path,
         conf: float = 0.20,
         device: str = "cpu",
+        cache_dir: str | Path | None = None,
     ) -> "PlanogramLoader":
         """
-        Detecta produtos na imagem do planograma via YOLO-World e indexa cada
-        recorte com CLIP. O CSV informa a capacidade por prateleira.
+        Detecta produtos na imagem do planograma e indexa com CLIP.
+        Na primeira execução gera e salva o índice em cache_dir.
+        Nas execuções seguintes carrega do cache — sem rodar CLIP novamente.
 
         Args:
-            image_path : imagem PNG/JPG do planograma completo.
+            image_path : imagem PNG/JPG do planograma.
             dist_csv   : CSV com colunas "Prateleira" e "SKU_limite".
-            conf       : limiar de confiança do detector (default 0.20 —
-                         mais baixo para não perder produtos pequenos).
-            device     : "cpu" | "cuda".
+            cache_dir  : pasta para salvar/carregar o índice.
+                         Padrão: mesma pasta da imagem, subpasta ".vdetec_cache".
         """
         loader = cls()
         image_path = Path(image_path)
-        dist_csv = Path(dist_csv)
+        dist_csv   = Path(dist_csv)
 
-        # Lê capacidades
+        cache_dir = Path(cache_dir) if cache_dir else image_path.parent / ".vdetec_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
         loader._shelf_capacities = _read_dist_csv(dist_csv)
 
-        # Detecta produtos no planograma
+        # Tenta carregar do cache
+        if loader._index.load(cache_dir):
+            print(f"Índice carregado do cache: {len(loader._index._meta)} produto(s)  [{cache_dir}]")
+            # Reconstrói _items a partir dos metadados do índice (sem embeddings)
+            for meta in loader._index._meta:
+                loader._items.append(PlanogramItem(
+                    product_id=meta["product_id"],
+                    name=meta["name"],
+                    ean=meta.get("ean"),
+                    shelf=meta.get("shelf"),
+                    bbox=tuple(meta["bbox"]) if meta.get("bbox") else None,
+                    image_path=image_path,
+                ))
+            return loader
+
+        # Cache não existe — gera índice
         frame = cv2.imread(str(image_path))
         if frame is None:
             raise FileNotFoundError(f"Imagem não encontrada: {image_path}")
@@ -107,14 +125,12 @@ class PlanogramLoader:
         detections = _detect_planogram_products(frame, conf=conf, device=device)
         print(f"  {len(detections)} produto(s) detectado(s)")
 
-        # Associa cada detecção à prateleira correspondente
         shelf_bands = _compute_shelf_bands(frame.shape[0], loader._shelf_capacities)
 
         items: list[tuple[PlanogramItem, np.ndarray]] = []
-        for i, (bbox, det_conf) in enumerate(detections, 1):
+        for i, (bbox, _) in enumerate(detections, 1):
             x1, y1, x2, y2 = bbox
-            cy = (y1 + y2) / 2
-            shelf_num = _bbox_to_shelf(cy, shelf_bands)
+            shelf_num = _bbox_to_shelf((y1 + y2) / 2, shelf_bands)
             crop = frame[y1:y2, x1:x2].copy()
             item = PlanogramItem(
                 product_id=str(uuid.uuid4()),
@@ -126,7 +142,9 @@ class PlanogramLoader:
             )
             items.append((item, crop))
 
-        loader._build_from_crops(items)
+        loader._build_from_crops(items, extra_meta_keys=["shelf", "bbox"])
+        loader._index.save(cache_dir)
+        print(f"Índice salvo em cache: {cache_dir}")
         return loader
 
     @classmethod
@@ -208,12 +226,19 @@ class PlanogramLoader:
     # Construção interna                                                   #
     # ------------------------------------------------------------------ #
 
-    def _build_from_crops(self, items: list[tuple[PlanogramItem, np.ndarray]]) -> None:
+    def _build_from_crops(
+        self,
+        items: list[tuple[PlanogramItem, np.ndarray]],
+        extra_meta_keys: list[str] | None = None,
+    ) -> None:
         print(f"Indexando {len(items)} produto(s) com CLIP...")
         for item, crop in tqdm(items, unit="produto"):
             emb = self._embedder.embed(crop)
             item.embedding = emb
-            self._index.add(emb, item.product_id, item.name, item.ean)
+            extra = {}
+            for key in (extra_meta_keys or []):
+                extra[key] = getattr(item, key, None)
+            self._index.add(emb, item.product_id, item.name, item.ean, **extra)
             self._items.append(item)
         print(f"Índice pronto: {len(self._items)} produto(s).")
 

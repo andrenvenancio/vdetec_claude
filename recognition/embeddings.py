@@ -1,10 +1,5 @@
 """
 Identificação visual por similaridade de embeddings com FAISS.
-
-Fluxo:
-  - Geração de embedding: imagem → vetor (ResNet/ViT via sentence-transformers)
-  - Indexação: produto cadastrado gera embedding → armazenado no índice FAISS
-  - Busca: embedding do recorte → top-k vizinhos mais próximos
 """
 from __future__ import annotations
 
@@ -24,11 +19,11 @@ class EmbeddingHit:
     product_id: str
     product_name: str
     ean: Optional[str]
-    score: float   # cosine similarity [0, 1]
+    score: float
 
 
 class VisualEmbedder:
-    MODEL_NAME = "clip-ViT-B-32"   # modelo CLIP multimodal via sentence-transformers
+    MODEL_NAME = "clip-ViT-B-32"
 
     def __init__(self, model_name: str | None = None) -> None:
         self._model_name = model_name or self.MODEL_NAME
@@ -39,7 +34,6 @@ class VisualEmbedder:
             self._model = SentenceTransformer(self._model_name)
 
     def embed(self, crop: np.ndarray) -> np.ndarray:
-        """Retorna vetor normalizado de dimensão 512 (CLIP ViT-B/32)."""
         self._load()
         pil_img = Image.fromarray(crop[..., ::-1])  # BGR → RGB
         emb = self._model.encode(pil_img, convert_to_numpy=True, normalize_embeddings=True)
@@ -48,41 +42,54 @@ class VisualEmbedder:
 
 class EmbeddingIndex:
     """
-    Índice FAISS (Inner-Product sobre vetores normalizados = cosine similarity).
+    Índice FAISS (Inner-Product = cosine similarity sobre vetores normalizados).
 
-    index.bin   → índice FAISS
-    meta.pkl    → lista de dicts com product_id, product_name, ean
+    Arquivos em cache:
+        index.bin  — vetores FAISS
+        meta.pkl   — metadados de cada entrada (product_id, name, ean, + extras)
     """
 
-    DEFAULT_PATH = Path("./models/faiss_index")
-
-    def __init__(self, index_path: Path | None = None) -> None:
-        self._path = index_path or self.DEFAULT_PATH
+    def __init__(self) -> None:
         self._index: faiss.IndexFlatIP | None = None
         self._meta: list[dict] = []
 
-    def load(self) -> None:
-        index_file = self._path / "index.bin"
-        meta_file = self._path / "meta.pkl"
-        if index_file.exists() and meta_file.exists():
-            self._index = faiss.read_index(str(index_file))
-            with open(meta_file, "rb") as f:
-                self._meta = pickle.load(f)
+    # ── Persistência ───────────────────────────────────────────────────── #
 
-    def save(self) -> None:
-        self._path.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(self._index, str(self._path / "index.bin"))
-        with open(self._path / "meta.pkl", "wb") as f:
+    def load(self, cache_dir: Path) -> bool:
+        """Carrega índice do disco. Retorna True se bem-sucedido."""
+        index_file = cache_dir / "index.bin"
+        meta_file  = cache_dir / "meta.pkl"
+        if not (index_file.exists() and meta_file.exists()):
+            return False
+        self._index = faiss.read_index(str(index_file))
+        with open(meta_file, "rb") as f:
+            self._meta = pickle.load(f)
+        return True
+
+    def save(self, cache_dir: Path) -> None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        faiss.write_index(self._index, str(cache_dir / "index.bin"))
+        with open(cache_dir / "meta.pkl", "wb") as f:
             pickle.dump(self._meta, f)
 
-    def add(self, embedding: np.ndarray, product_id: str, product_name: str, ean: str | None) -> None:
-        dim = embedding.shape[0]
-        if self._index is None:
-            self._index = faiss.IndexFlatIP(dim)
-        self._index.add(embedding.reshape(1, -1))
-        self._meta.append({"product_id": product_id, "product_name": product_name, "ean": ean})
+    # ── Escrita ────────────────────────────────────────────────────────── #
 
-    def search(self, embedding: np.ndarray, top_k: int = 3) -> list[EmbeddingHit]:
+    def add(
+        self,
+        embedding: np.ndarray,
+        product_id: str,
+        product_name: str,
+        ean: str | None,
+        **extra,
+    ) -> None:
+        if self._index is None:
+            self._index = faiss.IndexFlatIP(embedding.shape[0])
+        self._index.add(embedding.reshape(1, -1))
+        self._meta.append({"product_id": product_id, "name": product_name, "ean": ean, **extra})
+
+    # ── Leitura ────────────────────────────────────────────────────────── #
+
+    def search(self, embedding: np.ndarray, top_k: int = 1) -> list[EmbeddingHit]:
         if self._index is None or self._index.ntotal == 0:
             return []
         distances, indices = self._index.search(embedding.reshape(1, -1), top_k)
@@ -93,19 +100,18 @@ class EmbeddingIndex:
             meta = self._meta[idx]
             hits.append(EmbeddingHit(
                 product_id=meta["product_id"],
-                product_name=meta["product_name"],
+                product_name=meta["name"],
                 ean=meta.get("ean"),
                 score=float(dist),
             ))
         return hits
 
     def search_by_ean(self, ean: str) -> EmbeddingHit | None:
-        """Busca exata por EAN nos metadados (sem usar o índice vetorial)."""
         for meta in self._meta:
             if meta.get("ean") == ean:
                 return EmbeddingHit(
                     product_id=meta["product_id"],
-                    product_name=meta["product_name"],
+                    product_name=meta["name"],
                     ean=meta["ean"],
                     score=1.0,
                 )
