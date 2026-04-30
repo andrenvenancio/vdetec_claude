@@ -20,13 +20,19 @@ from recognition.embeddings import VisualEmbedder
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--planogram", required=True)
-    p.add_argument("--dist-csv",  required=True, dest="dist_csv")
-    p.add_argument("--save",      default="sanity_result.jpg")
+    p.add_argument("--planogram",    required=True)
+    p.add_argument("--dist-csv",     required=True, dest="dist_csv")
+    p.add_argument("--manifest-pdf", default=None,  dest="manifest_pdf")
+    p.add_argument("--save",         default="sanity_result.jpg")
     args = p.parse_args()
 
     # 1. Indexa planograma
-    loader = PlanogramLoader.from_image(args.planogram, args.dist_csv)
+    if args.manifest_pdf:
+        loader = PlanogramLoader.from_image_with_manifest(
+            args.planogram, args.dist_csv, args.manifest_pdf
+        )
+    else:
+        loader = PlanogramLoader.from_image(args.planogram, args.dist_csv)
     embedder = VisualEmbedder()
     frame = cv2.imread(args.planogram)
 
@@ -48,23 +54,23 @@ def main() -> None:
         hits = loader.index.search(emb, top_k=1)
 
         if not hits:
-            print(f"  ✗ [{item.name}] sem resultado no índice")
+            print(f"  XX [{item.name}] sem resultado no índice")
             fail += 1
             continue
 
         best = hits[0]
         match = best.product_id == item.product_id
-        symbol = "✓" if match else "✗"
+        symbol = "OK" if match else "XX"
         scores.append(best.score)
         if match:
             ok += 1
         else:
             fail += 1
 
-        print(f"  {symbol} {item.name:30s}  score={best.score:.4f}  → {best.product_name}")
+        print(f"  {symbol} {item.name:30s}  score={best.score:.4f}  -> {best.product_name}")
 
     # 2. Resumo
-    print(f"\n── Resultado ────────────────────────────")
+    print(f"\n-- Resultado ----------------------------------------")
     print(f"  Corretos  : {ok}/{len(loader.items)}")
     print(f"  Incorretos: {fail}/{len(loader.items)}")
     if scores:

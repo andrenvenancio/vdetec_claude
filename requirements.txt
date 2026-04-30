@@ -16,6 +16,9 @@ pyzbar>=0.1.9
 # OCR
 easyocr>=1.7.1
 
+# Leitura de PDF (manifesto de planograma)
+pymupdf>=1.24.0
+
 # Utilitários
 tqdm>=4.66.0
 python-dotenv>=1.0.1

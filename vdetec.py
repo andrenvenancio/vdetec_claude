@@ -22,6 +22,7 @@ import cv2
 import numpy as np
 
 from detection.detector import ProductDetector, Detection
+from detection.shelf_detector import ShelfStructureDetector
 from recognition.pipeline import RecognitionPipeline, RecognitionResult
 from planogram.loader import PlanogramLoader
 
@@ -41,6 +42,7 @@ class ProductMatch:
     detector_confidence: float
     bbox: tuple[float, float, float, float]   # x1, y1, x2, y2 em pixels
     crop: np.ndarray = field(repr=False)
+    location: Optional[int] = None
 
 
 @dataclass
@@ -99,19 +101,28 @@ class VDetec:
         self,
         source: str | Path,
         dist_csv: str | Path | None = None,
+        manifest_pdf: str | Path | None = None,
+        products_folder: str | Path | None = None,
     ) -> "VDetec":
         """
         Carrega planograma a partir de:
-          - imagem PNG/JPG + CSV de capacidade  →  from_image(source, dist_csv)
-          - pasta de imagens individuais        →  from_folder(source)
-          - arquivo JSON                        →  from_json(source)
-          - arquivo CSV de manifesto            →  from_csv(source)
+          - imagem PNG/JPG + CSV + PDF de manifesto  →  from_image_with_manifest()
+          - imagem PNG/JPG + CSV de capacidade       →  from_image(source, dist_csv)
+          - pasta de imagens individuais             →  from_folder(source)
+          - arquivo JSON                             →  from_json(source)
+          - arquivo CSV de manifesto                 →  from_csv(source)
         """
         source = Path(source)
         if source.is_file() and source.suffix.lower() in {".png", ".jpg", ".jpeg"}:
             if dist_csv is None:
                 raise ValueError("Passe dist_csv= junto com a imagem do planograma.")
-            self._planogram = PlanogramLoader.from_image(source, dist_csv, device=self._device)
+            if manifest_pdf:
+                self._planogram = PlanogramLoader.from_image_with_manifest(
+                    source, dist_csv, manifest_pdf,
+                    products_folder=products_folder,
+                )
+            else:
+                self._planogram = PlanogramLoader.from_image(source, dist_csv, device=self._device)
         elif source.is_dir():
             self._planogram = PlanogramLoader.from_folder(source)
         elif source.suffix.lower() == ".json":
@@ -122,6 +133,13 @@ class VDetec:
             raise ValueError(f"Fonte não reconhecida: {source}")
 
         self._pipeline = RecognitionPipeline(self._planogram.index)
+
+        if self._planogram.manifest:
+            self._detector = ShelfStructureDetector(
+                manifest=self._planogram.manifest,
+                n_shelves=len(self._planogram.shelf_capacities),
+            )
+
         return self
 
     # ── Identificação ──────────────────────────────────────────────────────
@@ -163,6 +181,7 @@ class VDetec:
                 detector_confidence=det.confidence,
                 bbox=det.bbox,
                 crop=det.crop,
+                location=det.location,
             ))
 
         return IdentificationResult(

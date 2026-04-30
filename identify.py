@@ -47,10 +47,8 @@ def annotate(frame: np.ndarray, result: IdentificationResult, min_conf: float = 
         color = _COLORS.get(det.method, (180, 180, 180))
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
 
-        label = det.product_name or "???"
-        if det.ean:
-            label += f" [{det.ean}]"
-        label += f" {det.confidence:.0%}"
+        prefix = str(det.location) if det.location is not None else (det.product_name or "???")
+        label = f"{prefix} {det.confidence:.0%}"
 
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(out, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
@@ -69,6 +67,10 @@ def parse_args() -> argparse.Namespace:
                    help="Imagem PNG do planograma, pasta de imagens, .json ou .csv")
     p.add_argument("--dist-csv", dest="dist_csv", metavar="CSV",
                    help="CSV de capacidade por prateleira (obrigatório quando --planogram é PNG)")
+    p.add_argument("--manifest-pdf", dest="manifest_pdf", metavar="PDF", default=None,
+                   help="PDF de manifesto do planograma (Location, UPC, Name, Horiz_F)")
+    p.add_argument("--products-folder", dest="products_folder", metavar="DIR", default=None,
+                   help="Pasta com imagens de produto nomeadas por Location (1.jpg ... 60.jpg)")
     p.add_argument("--image", nargs="+", required=True,
                    help="Uma ou mais imagens de prateleira para analisar")
     p.add_argument("--save", metavar="PATH",
@@ -86,7 +88,12 @@ def main() -> None:
     args = parse_args()
 
     vd = VDetec(device=args.device)
-    vd.load_planogram(args.planogram, dist_csv=args.dist_csv)
+    vd.load_planogram(
+        args.planogram,
+        dist_csv=args.dist_csv,
+        manifest_pdf=args.manifest_pdf,
+        products_folder=args.products_folder,
+    )
 
     for img_path in args.image:
         result = vd.identify(img_path)
@@ -98,10 +105,14 @@ def main() -> None:
             annotated = annotate(frame, result, min_conf=args.min_conf)
 
             if args.save:
-                save_path = args.save if len(args.image) == 1 else (
-                    Path(img_path).stem + "_resultado.jpg"
-                )
-                cv2.imwrite(save_path, annotated)
+                save_arg = Path(args.save)
+                if len(args.image) == 1:
+                    save_path = save_arg
+                else:
+                    folder = save_arg if save_arg.suffix == "" else save_arg.parent
+                    folder.mkdir(parents=True, exist_ok=True)
+                    save_path = folder / (Path(img_path).stem + "_results.jpg")
+                cv2.imwrite(str(save_path), annotated)
                 print(f"Imagem salva: {save_path}")
 
             if args.show:

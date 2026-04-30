@@ -41,6 +41,15 @@ _EAN_RE = re.compile(r"^(\d{8}|\d{13})")
 
 
 @dataclass
+class ManifestItem:
+    location: int
+    upc: str
+    name: str
+    horiz_f: int
+    shelf: int | None = None
+
+
+@dataclass
 class ShelfCapacity:
     shelf: int
     sku_limit: int
@@ -67,6 +76,7 @@ class PlanogramLoader:
         self._index = EmbeddingIndex()
         self._items: list[PlanogramItem] = []
         self._shelf_capacities: list[ShelfCapacity] = []
+        self._manifest: list[ManifestItem] = []
 
     # ------------------------------------------------------------------ #
     # Construtores                                                         #
@@ -148,6 +158,115 @@ class PlanogramLoader:
         return loader
 
     @classmethod
+    def from_image_with_manifest(
+        cls,
+        image_path: str | Path,
+        dist_csv: str | Path,
+        manifest_pdf: str | Path,
+        products_folder: str | Path | None = None,
+        cache_dir: str | Path | None = None,
+    ) -> "PlanogramLoader":
+        """
+        Segmenta o planograma usando o manifesto do PDF (Location, UPC, Name, Horiz_F).
+
+        Em vez de inferir separadores verticais por variância, divide cada prateleira
+        proporcionalmente pelos facings declarados no PDF. Isso produz crops com nomes
+        e EANs reais, em vez de produto_001_prat1.
+
+        Se products_folder for fornecida, embeda também as imagens individuais dos
+        produtos (nomeadas por Location: 1.jpg, 2.jpg, ...) e as adiciona ao índice
+        com o mesmo product_id do crop do planograma. Isso melhora o recall do CLIP
+        em fotos reais de gôndola.
+
+        Args:
+            image_path      : imagem PNG/JPG do planograma.
+            dist_csv        : CSV com colunas "Prateleira" e "SKU_limite".
+            manifest_pdf    : PDF exportado do sistema de planograma (formato Venancio).
+            products_folder : pasta com imagens nomeadas por Location (1.jpg ... 60.jpg).
+            cache_dir       : pasta para salvar/carregar o índice.
+        """
+        loader = cls()
+        image_path = Path(image_path)
+        dist_csv   = Path(dist_csv)
+        manifest_pdf = Path(manifest_pdf)
+
+        cache_dir = Path(cache_dir) if cache_dir else image_path.parent / ".vdetec_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        loader._shelf_capacities = _read_dist_csv(dist_csv)
+
+        if loader._index.load(cache_dir):
+            print(f"Índice carregado do cache: {len(loader._index._meta)} produto(s)  [{cache_dir}]")
+            for meta in loader._index._meta:
+                loader._items.append(PlanogramItem(
+                    product_id=meta["product_id"],
+                    name=meta["name"],
+                    ean=meta.get("ean"),
+                    shelf=meta.get("shelf"),
+                    bbox=tuple(meta["bbox"]) if meta.get("bbox") else None,
+                    image_path=image_path,
+                ))
+            manifest = _read_pdf_manifest(manifest_pdf)
+            _assign_shelves_to_manifest(manifest, loader._shelf_capacities)
+            loader._manifest = manifest
+            return loader
+
+        frame = cv2.imread(str(image_path))
+        if frame is None:
+            raise FileNotFoundError(f"Imagem não encontrada: {image_path}")
+
+        manifest = _read_pdf_manifest(manifest_pdf)
+        _assign_shelves_to_manifest(manifest, loader._shelf_capacities)
+        loader._manifest = manifest
+
+        shelf_bands = _detect_shelf_y_bands(frame, n_shelves=len(loader._shelf_capacities))
+        print(f"Prateleiras detectadas: {len(shelf_bands)}")
+
+        items_by_shelf: dict[int, list[ManifestItem]] = {}
+        for m in manifest:
+            items_by_shelf.setdefault(m.shelf, []).append(m)
+
+        items: list[tuple[PlanogramItem, np.ndarray]] = []
+        for shelf_num, (y1, y2) in enumerate(shelf_bands, 1):
+            shelf_items = sorted(items_by_shelf.get(shelf_num, []), key=lambda m: m.location)
+            if not shelf_items:
+                continue
+            total_f = sum(m.horiz_f for m in shelf_items)
+            w = frame.shape[1]
+            x_cursor = 0
+            for m in shelf_items:
+                x1 = x_cursor
+                x2 = x_cursor + round(m.horiz_f / total_f * w)
+                x_cursor = x2
+                crop = frame[y1:y2, x1:x2].copy()
+                item = PlanogramItem(
+                    product_id=str(uuid.uuid4()),
+                    name=m.name,
+                    ean=m.upc,
+                    shelf=shelf_num,
+                    bbox=(x1, y1, x2, y2),
+                    image_path=image_path,
+                )
+                items.append((item, crop))
+
+        print(f"{len(items)} produto(s) extraído(s) do manifesto")
+        loader._build_from_crops(items, extra_meta_keys=["shelf", "bbox"])
+
+        # Enriquece o índice com imagens individuais dos produtos (se fornecidas)
+        if products_folder:
+            loc_to_item = {item.product_id: item for item in loader._items}
+            loc_to_pid = {m.location: next(
+                (it.product_id for it in loader._items if it.ean == m.upc), None
+            ) for m in manifest}
+            _enrich_from_products_folder(
+                Path(products_folder), manifest, loc_to_pid, loader
+            )
+
+        loader._index.save(cache_dir)
+        print(f"Índice salvo em cache: {cache_dir}")
+        return loader
+
+    @classmethod
     def from_folder(cls, folder: str | Path) -> "PlanogramLoader":
         loader = cls()
         folder = Path(folder)
@@ -212,6 +331,10 @@ class PlanogramLoader:
     @property
     def shelf_capacities(self) -> list[ShelfCapacity]:
         return self._shelf_capacities
+
+    @property
+    def manifest(self) -> list[ManifestItem]:
+        return self._manifest
 
     def capacity_for_shelf(self, shelf: int) -> int | None:
         for sc in self._shelf_capacities:
@@ -362,6 +485,113 @@ def _bbox_to_shelf(cy: float, bands: list[tuple[float, float]]) -> int:
         if y_min <= cy < y_max:
             return i + 1
     return len(bands)
+
+
+def _read_pdf_manifest(pdf_path: Path) -> list[ManifestItem]:
+    """
+    Lê o PDF de planograma no formato Venancio e retorna lista de ManifestItem.
+    Espera linhas com: Location  UPC  Name  Horiz_F
+    """
+    try:
+        import fitz
+    except ModuleNotFoundError:
+        import sys, site
+        sys.path.insert(0, site.getusersitepackages())
+        import fitz
+
+    doc = fitz.open(str(pdf_path))
+    items: list[ManifestItem] = []
+    row_re = re.compile(
+        r"^\s*(\d+)\s+(\d{13}|\d{8})\s+(.+?)\s{2,}(\d+)\s*$"
+    )
+    for page in doc:
+        for line in page.get_text().splitlines():
+            m = row_re.match(line)
+            if m:
+                items.append(ManifestItem(
+                    location=int(m.group(1)),
+                    upc=m.group(2),
+                    name=m.group(3).strip(),
+                    horiz_f=int(m.group(4)),
+                ))
+    if not items:
+        raise ValueError(f"Nenhum produto encontrado no PDF: {pdf_path}. Verifique o formato.")
+    return sorted(items, key=lambda i: i.location)
+
+
+def _assign_shelves_to_manifest(
+    manifest: list[ManifestItem],
+    capacities: list[ShelfCapacity],
+) -> None:
+    """
+    Atribui shelf a cada ManifestItem com base nos limites cumulativos do dist.csv.
+    SKU_limite é o último location number da prateleira.
+    """
+    sorted_caps = sorted(capacities, key=lambda c: c.shelf)
+    for item in manifest:
+        for cap in sorted_caps:
+            if item.location <= cap.sku_limit:
+                item.shelf = cap.shelf
+                break
+        else:
+            item.shelf = sorted_caps[-1].shelf
+
+
+def _detect_shelf_y_bands(
+    frame: np.ndarray,
+    n_shelves: int,
+) -> list[tuple[int, int]]:
+    """
+    Detecta as faixas verticais (Y) das prateleiras via projeção de variância.
+    Retorna exatamente n_shelves bandas, dividindo o frame se necessário.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    h = gray.shape[0]
+    row_var = np.var(gray.astype(np.float32), axis=1)
+    kernel = np.ones(max(3, h // 80)) / max(3, h // 80)
+    row_smooth = np.convolve(row_var, kernel, mode="same")
+    bands = _find_separators(row_smooth, n_expected=None, axis="y", size=h)
+
+    if len(bands) == n_shelves:
+        return bands
+
+    # Fallback: divisão igual
+    band_h = h // n_shelves
+    return [(i * band_h, (i + 1) * band_h) for i in range(n_shelves)]
+
+
+def _enrich_from_products_folder(
+    folder: Path,
+    manifest: list[ManifestItem],
+    loc_to_pid: dict[int, str | None],
+    loader: "PlanogramLoader",
+) -> None:
+    """
+    Para cada imagem {location}.jpg na pasta, embeda e adiciona ao índice
+    com o mesmo product_id do crop do planograma correspondente.
+    """
+    loc_to_manifest = {m.location: m for m in manifest}
+    found = 0
+    for path in sorted(folder.iterdir()):
+        if path.suffix.lower() not in _IMAGE_EXTS:
+            continue
+        try:
+            loc = int(path.stem)
+        except ValueError:
+            continue
+        pid = loc_to_pid.get(loc)
+        m = loc_to_manifest.get(loc)
+        if pid is None or m is None:
+            print(f"  [aviso] location {loc} não encontrada no manifesto, ignorando")
+            continue
+        img = cv2.imread(str(path))
+        if img is None:
+            print(f"  [aviso] não foi possível ler: {path}")
+            continue
+        emb = loader._embedder.embed(img)
+        loader._index.add(emb, pid, m.name, m.upc, shelf=m.shelf, bbox=None)
+        found += 1
+    print(f"  {found} imagem(ns) de produto indexada(s) de {folder}")
 
 
 def _parse_filename(path: Path) -> PlanogramItem:

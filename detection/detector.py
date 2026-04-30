@@ -10,14 +10,14 @@ from typing import Sequence
 import numpy as np
 from ultralytics import YOLOWorld
 
-# Classes que descrevem produtos farmacêuticos em gôndola
+# Classes genéricas para produtos em gôndola de varejo
 _DEFAULT_CLASSES = [
-    "medicine box",
-    "medicine bottle",
-    "pharmaceutical product",
-    "product package",
-    "drug box",
-    "cosmetic product",
+    "product box",
+    "package",
+    "bottle",
+    "box",
+    "food package",
+    "consumer product",
 ]
 
 
@@ -27,6 +27,7 @@ class Detection:
     confidence: float
     class_name: str
     crop: np.ndarray | None = field(default=None, repr=False)
+    location: int | None = None
 
 
 class ProductDetector:
@@ -40,7 +41,7 @@ class ProductDetector:
     def __init__(
         self,
         classes: list[str] | None = None,
-        conf: float = 0.25,
+        conf: float = 0.05,
         iou: float = 0.45,
         device: str = "cpu",
     ) -> None:
