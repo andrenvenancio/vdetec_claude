@@ -17,18 +17,39 @@ models/
 *.tiff
 *.tif
 *.webp
+*.heic
+*.svg
+*.ico
 *.mp4
 *.avi
 *.mov
 *.mkv
 
+# Documentos binários (PDF/PPTX/DOCX são pesados e baixo sinal)
+*.pdf
+*.pptx
+*.ppt
+*.docx
+*.doc
+*.xlsx
+*.xls
+documentos/
+
+# Pasta images/ inteira — só liberar subpasta específica abaixo se necessário
+images/
+
+# Resultados gerados (imagens anotadas)
+results/
+
+# Cache do vdetec (índices FAISS binários + meta)
+.vdetec_cache/
+.vdetec_cache_*/
+**/.vdetec_cache/
+**/.vdetec_cache_*/
+
 # Media & uploads
 media/
 uploads/
-
-# Ignora tudo em images/ exceto subpastas explicitamente permitidas
-images/*
-!images/adocante/
 
 # Logs
 *.log

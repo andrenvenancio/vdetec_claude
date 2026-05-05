@@ -51,6 +51,28 @@ models/
 *.webm
 *.m4v
 
+# Documentos binários pesados
+*.pdf
+*.pptx
+*.ppt
+*.docx
+*.doc
+*.xlsx
+*.xls
+documentos/
+
+# Pasta images/ inteira (datasets de prateleira / planogramas)
+images/
+
+# Resultados gerados
+results/
+
+# Cache do vdetec (índice FAISS por experimento)
+.vdetec_cache/
+.vdetec_cache_*/
+**/.vdetec_cache/
+**/.vdetec_cache_*/
+
 # Media & uploads
 media/
 uploads/
